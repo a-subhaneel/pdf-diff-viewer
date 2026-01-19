@@ -1,0 +1,638 @@
+/**
+ * PDFDiffViewer - Embeddable PDF Comparison Library
+ * A framework-agnostic library for visual PDF comparison
+ */
+
+class PDFDiffViewer {
+    constructor(container, options = {}) {
+        if (typeof container === 'string') {
+            this.container = document.querySelector(container);
+        } else {
+            this.container = container;
+        }
+
+        if (!this.container) {
+            throw new Error('Container element not found');
+        }
+
+        // Configuration
+        this.options = {
+            scale: options.scale || 3.0,
+            maxShift: options.maxShift || 3,
+            dilationRadius: options.dilationRadius || 0,
+            colorTolerance: options.colorTolerance || 120,
+            minHighlightArea: options.minHighlightArea || 60,
+            minWordSize: options.minWordSize || 8,
+            highlightAlpha: options.highlightAlpha || 0.32,
+            labelA: options.labelA || 'Document A',
+            labelB: options.labelB || 'Document B',
+            workerSrc: options.workerSrc || 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
+            showPageNumbers: options.showPageNumbers !== false,
+            cropRegions: options.cropRegions || [],
+            maskRegions: options.maskRegions || []
+        };
+
+        // Check if PDF.js is loaded
+        if (typeof pdfjsLib === 'undefined') {
+            throw new Error('PDF.js library not found. Please include PDF.js before using PDFDiffViewer.');
+        }
+
+        pdfjsLib.GlobalWorkerOptions.workerSrc = this.options.workerSrc;
+
+        this.results = null;
+    }
+
+    /**
+     * Compare two PDF files and render the results
+     * @param {File|ArrayBuffer|Uint8Array} pdfA - First PDF
+     * @param {File|ArrayBuffer|Uint8Array} pdfB - Second PDF
+     * @returns {Promise<Object>} Comparison results
+     */
+    async compare(pdfA, pdfB) {
+        // Convert Files to ArrayBuffers if needed
+        const bufferA = await this._toArrayBuffer(pdfA);
+        const bufferB = await this._toArrayBuffer(pdfB);
+
+        // Load PDFs
+        const docA = await pdfjsLib.getDocument({ data: bufferA }).promise;
+        const docB = await pdfjsLib.getDocument({ data: bufferB }).promise;
+
+        if (docA.numPages !== docB.numPages) {
+            throw new Error(`Page count mismatch: ${docA.numPages} vs ${docB.numPages}`);
+        }
+
+        // Clear previous results
+        this.container.innerHTML = '';
+
+        let totalDiffPixels = 0;
+        const pageResults = [];
+
+        // Create summary element
+        const summaryDiv = document.createElement('div');
+        summaryDiv.className = 'pdf-diff-summary';
+        this.container.appendChild(summaryDiv);
+
+        // Process each page
+        for (let i = 1; i <= docA.numPages; i++) {
+            const pageResult = await this._comparePage(docA, docB, i);
+            pageResults.push(pageResult);
+            totalDiffPixels += pageResult.diffPixels;
+
+            this._renderPageComparison(pageResult, i);
+        }
+
+        this.results = {
+            totalPages: docA.numPages,
+            totalDiffPixels,
+            pageResults
+        };
+
+        // Update summary
+        if (this.options.showPageNumbers) {
+            summaryDiv.innerHTML = `<h3>Comparison Results: ${docA.numPages} page(s)</h3>`;
+        }
+
+        return this.results;
+    }
+
+    /**
+     * Get the comparison results
+     */
+    getResults() {
+        return this.results;
+    }
+
+    /**
+     * Clear the viewer and reset
+     */
+    clear() {
+        this.container.innerHTML = '';
+        this.results = null;
+    }
+
+    /**
+     * Destroy the viewer and clean up
+     */
+    destroy() {
+        this.clear();
+        this.container = null;
+    }
+
+    // ===== PRIVATE METHODS =====
+
+    async _toArrayBuffer(input) {
+        if (input instanceof ArrayBuffer) {
+            return input;
+        }
+        if (input instanceof Uint8Array) {
+            return input.buffer;
+        }
+        if (input instanceof File || input instanceof Blob) {
+            return await input.arrayBuffer();
+        }
+        throw new Error('Unsupported input type. Expected File, Blob, ArrayBuffer, or Uint8Array.');
+    }
+
+    async _comparePage(docA, docB, pageNum) {
+        const canvasA = document.createElement('canvas');
+        const canvasB = document.createElement('canvas');
+
+        const { words: wordsA } = await this._renderPageToCanvas(docA, pageNum, canvasA);
+        const { words: wordsB } = await this._renderPageToCanvas(docB, pageNum, canvasB);
+
+        const pageCrop = this.options.cropRegions.find(r => r.page === pageNum);
+        const croppedWordsA = this._offsetWordBoxes(wordsA, pageCrop);
+        const croppedWordsB = this._offsetWordBoxes(wordsB, pageCrop);
+
+        const croppedA = this._applyCrop(canvasA, pageCrop);
+        const croppedB = this._applyCrop(canvasB, pageCrop);
+        const targetWidth = Math.max(croppedA.width, croppedB.width);
+        const targetHeight = Math.max(croppedA.height, croppedB.height);
+
+        const paddedA = this._padCanvas(croppedA, targetWidth, targetHeight);
+        const paddedB = this._padCanvas(croppedB, targetWidth, targetHeight);
+
+        const highlightCanvasB = document.createElement('canvas');
+        highlightCanvasB.width = targetWidth;
+        highlightCanvasB.height = targetHeight;
+
+        const imgA = this._canvasToImageData(paddedA);
+        const imgB = this._canvasToImageData(paddedB);
+
+        const canvasDiff = document.createElement('canvas');
+        canvasDiff.width = targetWidth;
+        canvasDiff.height = targetHeight;
+
+        const ctxDiff = canvasDiff.getContext('2d');
+        const diffImage = ctxDiff.createImageData(imgA.width, imgA.height);
+
+        // Find best alignment
+        const best = this._findBestOffset(imgA, paddedB, imgA.width, imgA.height, this.options.colorTolerance);
+        const shiftedB = this._getShiftedImageData(paddedB, imgA.width, imgA.height, best.dx, best.dy);
+
+        const diffPixels = this._buildDiffImage(imgA, shiftedB, diffImage, this.options.colorTolerance);
+
+        // Apply masks
+        const pageMasks = this.options.maskRegions.filter(r => r.page === pageNum);
+        this._applyMasks(diffImage, pageMasks);
+
+        // Dilate diff mask
+        this._dilateDiffMask(diffImage, imgA.width, imgA.height, this.options.dilationRadius);
+
+        const boxes = this._extractDiffBoxes(diffImage, imgA.width, imgA.height, this.options.minHighlightArea);
+
+        const wordHighlightsA = this._mapDiffsToWordBoxes(boxes, croppedWordsA);
+        this._drawHighlightBoxes(ctxDiff, wordHighlightsA, 'red');
+
+        const boxesForB = this._translateBoxes(boxes, -best.dx, -best.dy);
+        const wordHighlightsB = this._mapDiffsToWordBoxes(boxesForB, croppedWordsB);
+        const highlightCtxB = highlightCanvasB.getContext('2d');
+        this._drawHighlightBoxes(highlightCtxB, wordHighlightsB, 'green');
+
+        // Create overlays
+        const overlayOnA = this._overlayDiff(paddedA, canvasDiff);
+        const overlayOnB = this._overlayDiff(paddedB, highlightCanvasB);
+
+        return {
+            pageNum,
+            diffPixels,
+            overlayA: overlayOnA.toDataURL('image/png'),
+            overlayB: overlayOnB.toDataURL('image/png'),
+            alignment: { dx: best.dx, dy: best.dy }
+        };
+    }
+
+    _renderPageComparison(pageResult, pageNum) {
+        const pageDiv = document.createElement('div');
+        pageDiv.className = 'pdf-diff-page';
+
+        if (this.options.showPageNumbers) {
+            const title = document.createElement('h4');
+            title.innerText = `Page ${pageNum}`;
+            title.style.marginTop = '20px';
+            pageDiv.appendChild(title);
+        }
+
+        const row = document.createElement('div');
+        row.style.display = 'grid';
+        row.style.gridTemplateColumns = '1fr 1fr';
+        row.style.gap = '15px';
+        row.style.marginBottom = '25px';
+        row.style.borderTop = '2px solid #ddd';
+        row.style.paddingTop = '15px';
+
+        const colA = this._makeColumn(this.options.labelA, pageResult.overlayA);
+        const colB = this._makeColumn(this.options.labelB, pageResult.overlayB);
+
+        row.appendChild(colA);
+        row.appendChild(colB);
+        pageDiv.appendChild(row);
+
+        this.container.appendChild(pageDiv);
+    }
+
+    _makeColumn(labelText, imageSrc) {
+        const col = document.createElement('div');
+        const label = document.createElement('div');
+        label.innerHTML = `<b>${labelText}</b>`;
+
+        const img = document.createElement('img');
+        img.src = imageSrc;
+        img.style.width = '100%';
+        img.style.border = '1px solid #ccc';
+        img.style.imageRendering = 'crisp-edges';
+        img.style.backgroundColor = '#fff';
+
+        col.appendChild(label);
+        col.appendChild(img);
+        return col;
+    }
+
+    async _renderPageToCanvas(pdf, pageNum, canvas) {
+        const page = await pdf.getPage(pageNum);
+        const viewport = page.getViewport({ scale: this.options.scale });
+
+        canvas.width = Math.floor(viewport.width);
+        canvas.height = Math.floor(viewport.height);
+
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.imageSmoothingEnabled = false;
+
+        await page.render({ canvasContext: ctx, viewport }).promise;
+
+        const words = await this._extractWordBoxes(page, viewport);
+        return { words };
+    }
+
+    async _extractWordBoxes(page, viewport) {
+        const textContent = await page.getTextContent({ normalizeWhitespace: true });
+        const boxes = [];
+
+        textContent.items.forEach((item) => {
+            const text = (item.str || '').trim();
+            if (!text) return;
+
+            const transform = pdfjsLib.Util.transform(viewport.transform, item.transform);
+            const x = transform[4];
+            const y = transform[5];
+
+            const width = (item.width || 0) * viewport.scale;
+            const glyphHeight = Math.hypot(transform[2], transform[3]);
+            const height = glyphHeight || ((item.height || 0) * viewport.scale);
+
+            if (!width || !height) return;
+
+            const charWidth = width / text.length;
+            if (!isFinite(charWidth) || charWidth <= 0) return;
+
+            const baseY = y - height;
+            let cursorX = x;
+
+            text.split(/(\s+)/).forEach((segment) => {
+                if (!segment) return;
+
+                const segmentWidth = charWidth * segment.length;
+                if (!segment.trim()) {
+                    cursorX += segmentWidth;
+                    return;
+                }
+
+                const paddingX = charWidth * 0.18;
+                const paddingY = height * 0.15;
+                const box = this._padBox({
+                    x: cursorX,
+                    y: baseY,
+                    width: segmentWidth,
+                    height
+                }, paddingX, paddingY);
+
+                boxes.push(box);
+                cursorX += segmentWidth;
+            });
+        });
+
+        return boxes;
+    }
+
+    _padCanvas(srcCanvas, targetWidth, targetHeight) {
+        if (srcCanvas.width === targetWidth && srcCanvas.height === targetHeight) {
+            return srcCanvas;
+        }
+
+        const padded = document.createElement('canvas');
+        padded.width = targetWidth;
+        padded.height = targetHeight;
+
+        const ctx = padded.getContext('2d');
+        ctx.fillStyle = 'white';
+        ctx.fillRect(0, 0, targetWidth, targetHeight);
+        ctx.drawImage(srcCanvas, 0, 0);
+        return padded;
+    }
+
+    _getShiftedImageData(srcCanvas, width, height, dx, dy) {
+        const temp = document.createElement('canvas');
+        temp.width = width;
+        temp.height = height;
+        const ctx = temp.getContext('2d');
+        ctx.fillStyle = 'white';
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(srcCanvas, dx, dy);
+        return ctx.getImageData(0, 0, width, height);
+    }
+
+    _pixelDelta(dataA, dataB, index) {
+        return Math.abs(dataA[index] - dataB[index]) +
+            Math.abs(dataA[index + 1] - dataB[index + 1]) +
+            Math.abs(dataA[index + 2] - dataB[index + 2]);
+    }
+
+    _countDiffPixels(imgA, imgB, tolerance) {
+        const dataA = imgA.data;
+        const dataB = imgB.data;
+        let diff = 0;
+        for (let i = 0; i < dataA.length; i += 4) {
+            if (this._pixelDelta(dataA, dataB, i) > tolerance) {
+                diff++;
+            }
+        }
+        return diff;
+    }
+
+    _findBestOffset(imgA, paddedB, width, height, tolerance) {
+        let best = { diff: Infinity, dx: 0, dy: 0 };
+        for (let dy = -this.options.maxShift; dy <= this.options.maxShift; dy++) {
+            for (let dx = -this.options.maxShift; dx <= this.options.maxShift; dx++) {
+                const shiftedB = this._getShiftedImageData(paddedB, width, height, dx, dy);
+                const diffCount = this._countDiffPixels(imgA, shiftedB, tolerance);
+                if (diffCount < best.diff) {
+                    best = { diff: diffCount, dx, dy };
+                }
+            }
+        }
+        return best;
+    }
+
+    _buildDiffImage(imgA, imgB, diffImage, tolerance) {
+        const target = diffImage.data;
+        const dataA = imgA.data;
+        const dataB = imgB.data;
+        let diffPixels = 0;
+
+        for (let i = 0; i < dataA.length; i += 4) {
+            if (this._pixelDelta(dataA, dataB, i) > tolerance) {
+                target[i] = 255;
+                target[i + 1] = 0;
+                target[i + 2] = 0;
+                target[i + 3] = 255;
+                diffPixels++;
+            } else {
+                target[i] = 0;
+                target[i + 1] = 0;
+                target[i + 2] = 0;
+                target[i + 3] = 0;
+            }
+        }
+
+        return diffPixels;
+    }
+
+    _dilateDiffMask(diffImage, width, height, radius = 0) {
+        const src = diffImage.data;
+        const mask = new Uint8Array(width * height);
+
+        for (let i = 0; i < width * height; i++) {
+            if (src[i * 4] > 0) {
+                mask[i] = 1;
+            }
+        }
+
+        const expanded = new Uint8Array(mask);
+        if (radius > 0) {
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const idx = y * width + x;
+                    if (!mask[idx]) continue;
+                    const yMin = Math.max(0, y - radius);
+                    const yMax = Math.min(height - 1, y + radius);
+                    const xMin = Math.max(0, x - radius);
+                    const xMax = Math.min(width - 1, x + radius);
+                    for (let ny = yMin; ny <= yMax; ny++) {
+                        for (let nx = xMin; nx <= xMax; nx++) {
+                            expanded[ny * width + nx] = 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        for (let i = 0; i < width * height; i++) {
+            const base = i * 4;
+            if (expanded[i]) {
+                src[base] = 255;
+                src[base + 1] = 0;
+                src[base + 2] = 0;
+                src[base + 3] = 255;
+            }
+        }
+    }
+
+    _extractDiffBoxes(diffImage, width, height, minArea = 25) {
+        const data = diffImage.data;
+        const visited = new Uint8Array(width * height);
+        const boxes = [];
+        const directions = [1, -1, width, -width];
+
+        for (let idx = 0; idx < width * height; idx++) {
+            if (visited[idx]) continue;
+            if (data[idx * 4 + 3] === 0) continue;
+
+            let minX = idx % width;
+            let maxX = minX;
+            let minY = Math.floor(idx / width);
+            let maxY = minY;
+
+            const stack = [idx];
+            visited[idx] = 1;
+
+            while (stack.length) {
+                const current = stack.pop();
+                const cx = current % width;
+                const cy = Math.floor(current / width);
+
+                if (cx < minX) minX = cx;
+                if (cx > maxX) maxX = cx;
+                if (cy < minY) minY = cy;
+                if (cy > maxY) maxY = cy;
+
+                for (const dir of directions) {
+                    const next = current + dir;
+                    if (next < 0 || next >= width * height) continue;
+                    const nx = next % width;
+                    const ny = Math.floor(next / width);
+                    if (Math.abs(nx - cx) + Math.abs(ny - cy) !== 1) continue;
+                    if (visited[next]) continue;
+                    if (data[next * 4 + 3] === 0) continue;
+                    visited[next] = 1;
+                    stack.push(next);
+                }
+            }
+
+            const area = (maxX - minX + 1) * (maxY - minY + 1);
+            if (area >= minArea) {
+                boxes.push({
+                    x: minX,
+                    y: minY,
+                    width: maxX - minX + 1,
+                    height: maxY - minY + 1
+                });
+            }
+        }
+
+        return boxes;
+    }
+
+    _drawHighlightBoxes(ctx, boxes, color = 'red') {
+        ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+        const alpha = this.options.highlightAlpha;
+        if (color === 'red') {
+            ctx.fillStyle = `rgba(255, 0, 0, ${alpha})`;
+        } else if (color === 'green') {
+            ctx.fillStyle = `rgba(0, 200, 0, ${alpha})`;
+        }
+        boxes.forEach(({ x, y, width, height }) => {
+            ctx.fillRect(x, y, width, height);
+        });
+    }
+
+    _rectsIntersect(a, b) {
+        return (
+            a.x < b.x + b.width &&
+            a.x + a.width > b.x &&
+            a.y < b.y + b.height &&
+            a.y + a.height > b.y
+        );
+    }
+
+    _dedupeBoxes(boxes) {
+        const seen = new Set();
+        const result = [];
+        boxes.forEach((box) => {
+            const key = [Math.round(box.x), Math.round(box.y), Math.round(box.width), Math.round(box.height)].join(':');
+            if (seen.has(key)) return;
+            seen.add(key);
+            result.push({ x: box.x, y: box.y, width: box.width, height: box.height });
+        });
+        return result;
+    }
+
+    _padBox(box, paddingX, paddingY) {
+        const x = Math.max(0, box.x - paddingX);
+        const y = Math.max(0, box.y - paddingY);
+        return {
+            x,
+            y,
+            width: Math.max(1, box.width + paddingX * 2),
+            height: Math.max(1, box.height + paddingY * 2)
+        };
+    }
+
+    _mapDiffsToWordBoxes(diffBoxes, wordBoxes) {
+        if (!wordBoxes || !wordBoxes.length) {
+            return diffBoxes;
+        }
+
+        const matched = [];
+
+        diffBoxes.forEach((diffBox) => {
+            let found = false;
+            for (const word of wordBoxes) {
+                if (this._rectsIntersect(diffBox, word)) {
+                    if (word.width >= this.options.minWordSize && word.height >= this.options.minWordSize) {
+                        matched.push(word);
+                        found = true;
+                    }
+                }
+            }
+            if (!found) {
+                matched.push(diffBox);
+            }
+        });
+
+        return this._dedupeBoxes(matched);
+    }
+
+    _translateBoxes(boxes, dx, dy) {
+        return boxes.map((box) => ({
+            x: box.x + dx,
+            y: box.y + dy,
+            width: box.width,
+            height: box.height
+        }));
+    }
+
+    _offsetWordBoxes(words, crop) {
+        if (!crop) return words;
+        return words.map(box => ({
+            ...box,
+            x: box.x - crop.x,
+            y: box.y - crop.y
+        }));
+    }
+
+    _canvasToImageData(canvas) {
+        const ctx = canvas.getContext('2d');
+        return ctx.getImageData(0, 0, canvas.width, canvas.height);
+    }
+
+    _applyCrop(canvas, region) {
+        if (!region) return canvas;
+        const cropped = document.createElement('canvas');
+        cropped.width = region.width;
+        cropped.height = region.height;
+        const ctx = cropped.getContext('2d');
+        ctx.drawImage(
+            canvas,
+            region.x, region.y, region.width, region.height,
+            0, 0, region.width, region.height
+        );
+        return cropped;
+    }
+
+    _applyMasks(diffImage, masks) {
+        if (!masks?.length) return;
+        const data = diffImage.data;
+        masks.forEach(({ x, y, width, height }) => {
+            for (let row = y; row < y + height; row++) {
+                for (let col = x; col < x + width; col++) {
+                    const idx = (row * diffImage.width + col) * 4;
+                    data[idx] = data[idx + 1] = data[idx + 2] = data[idx + 3] = 0;
+                }
+            }
+        });
+    }
+
+    _overlayDiff(baseCanvas, diffCanvas, opacity = 0.3) {
+        const overlay = document.createElement('canvas');
+        overlay.width = baseCanvas.width;
+        overlay.height = baseCanvas.height;
+
+        const ctx = overlay.getContext('2d');
+        ctx.drawImage(baseCanvas, 0, 0);
+        ctx.globalAlpha = opacity;
+        ctx.drawImage(diffCanvas, 0, 0);
+        ctx.globalAlpha = 1;
+        ctx.imageSmoothingEnabled = false;
+
+        return overlay;
+    }
+}
+
+// Export for different module systems
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = PDFDiffViewer;
+}
+if (typeof window !== 'undefined') {
+    window.PDFDiffViewer = PDFDiffViewer;
+}
