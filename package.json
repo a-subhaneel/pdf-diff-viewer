@@ -1,0 +1,54 @@
+{
+  "name": "pdf-diff-viewer",
+  "version": "1.0.0",
+  "description": "Browser-based PDF comparison tool with visual diff highlighting. Zero system dependencies, pure JavaScript, client-side processing.",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [
+    "pdf",
+    "diff",
+    "compare",
+    "viewer",
+    "visual-diff",
+    "pdf-comparison",
+    "browser",
+    "client-side",
+    "pdf-diff",
+    "pdf-viewer",
+    "compare-pdf",
+    "visual-comparison"
+  ],
+  "author": "Subhaneel Agarwalla <a.subhaneel@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/pdf-diff-viewer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yourusername/pdf-diff-viewer/issues"
+  },
+  "homepage": "https://github.com/yourusername/pdf-diff-viewer#readme",
+  "files": [
+    "public/",
+    "server.js",
+    "comparePdfs.js",
+    "mupdf-test.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "dependencies": {
+    "express": "^4.22.1",
+    "fs-extra": "^11.3.3",
+    "multer": "^1.4.5-lts.1",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^5.4.530",
+    "pixelmatch": "^5.3.0",
+    "pngjs": "^7.0.0"
+  }
+}
