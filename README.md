@@ -142,6 +142,9 @@ new PDFDiffViewer(container, options)
 - `showPageNumbers` (boolean) - Show page numbers, default: true
 - `cropRegions` (Array) - Regions to crop: `[{ page: 1, x, y, width, height }]`
 - `maskRegions` (Array) - Regions to mask/ignore: `[{ page: 1, x, y, width, height }]`
+- **`smartAlignment` (boolean)** - Enable text-based page alignment for content reflow, default: true
+- **`alignmentTolerance` (number)** - Search range for matching pages (+/- pages), default: 2
+- **`similarityThreshold` (number)** - Minimum text similarity (0-1) for page matching, default: 0.3
 
 ### Methods
 
@@ -157,6 +160,7 @@ Compare two PDFs and render results.
 - `totalPages` - Number of pages compared
 - `totalDiffPixels` - Total different pixels across all pages
 - `pageResults` - Array of per-page results
+- `pageMapping` - Page alignment mappings (when smartAlignment is enabled)
 
 #### `getResults()`
 
@@ -243,6 +247,29 @@ const viewer = new PDFDiffViewer('#container', {
   ]
 });
 ```
+
+### With Smart Alignment (Content Reflow Handling)
+
+```javascript
+// Handles cases where content shifts across pages
+// (e.g., adding text pushes content to next page)
+const viewer = new PDFDiffViewer('#container', {
+  smartAlignment: true,         // Enable intelligent page matching
+  alignmentTolerance: 2,        // Search +/- 2 pages for matches
+  similarityThreshold: 0.3      // Require 30% content similarity
+});
+
+const results = await viewer.compare(pdfA, pdfB);
+console.log('Page mappings:', results.pageMapping);
+// Output: [{ pageA: 1, pageB: 1, similarity: 0.95 }, 
+//          { pageA: 2, pageB: 3, similarity: 0.87 }, ...]
+```
+
+**How it works:**
+- Extracts text from all pages in both documents
+- Uses Jaccard similarity to find best-matching pages
+- Handles different page counts gracefully
+- Shows similarity scores in the UI
 
 ### With Mask Regions (Ignore Dynamic Content)
 
