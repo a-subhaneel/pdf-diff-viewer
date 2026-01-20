@@ -136,15 +136,17 @@ new PDFDiffViewer(container, options)
 - `colorTolerance` (number) - Color difference threshold, default: 120
 - `minHighlightArea` (number) - Min area to highlight in pixels, default: 60
 - `minWordSize` (number) - Min word box size in pixels, default: 8
-- `highlightAlpha` (number) - Highlight transparency, default: 0.32
+- `highlightAlpha` (number) - Highlight transparency (0-1), default: 0.32
+- **`highlightColorA` (string)** - Hex color for Document A highlights, default: '#FF1744' (red)
+- **`highlightColorB` (string)** - Hex color for Document B highlights, default: '#2196F3' (blue)
+- **`backgroundFillColor` (string)** - Canvas background fill color, default: 'white'
 - `labelA` (string) - Label for first document, default: 'Document A'
 - `labelB` (string) - Label for second document, default: 'Document B'
 - `showPageNumbers` (boolean) - Show page numbers, default: true
 - `cropRegions` (Array) - Regions to crop: `[{ page: 1, x, y, width, height }]`
 - `maskRegions` (Array) - Regions to mask/ignore: `[{ page: 1, x, y, width, height }]`
-- **`smartAlignment` (boolean)** - Enable text-based page alignment for content reflow, default: true
-- **`alignmentTolerance` (number)** - Search range for matching pages (+/- pages), default: 2
-- **`similarityThreshold` (number)** - Minimum text similarity (0-1) for page matching, default: 0.3
+- `alignmentTolerance` (number) - Search range for matching pages (+/- pages), default: 2
+- `similarityThreshold` (number) - Minimum text similarity (0-1) for page matching, default: 0.3
 
 ### Methods
 
@@ -238,6 +240,41 @@ const viewer = new PDFDiffViewer('#container', {
 });
 ```
 
+### Custom Highlight Colors
+
+```javascript
+// Perfect for gray backgrounds (#D9D9D9)
+const viewer = new PDFDiffViewer('#container', {
+  highlightColorA: '#FF1744',      // Vibrant red for Doc A changes
+  highlightColorB: '#2196F3',      // Bright blue for Doc B changes
+  backgroundFillColor: '#D9D9D9',  // Match your PDF background
+  highlightAlpha: 0.4              // Adjust transparency
+});
+```
+
+**Recommended color combinations:**
+
+For light backgrounds:
+```javascript
+// Red vs Blue (high contrast)
+{ highlightColorA: '#FF1744', highlightColorB: '#2196F3' }
+
+// Purple vs Orange
+{ highlightColorA: '#9C27B0', highlightColorB: '#FF6F00' }
+
+// Pink vs Teal
+{ highlightColorA: '#E91E63', highlightColorB: '#00BCD4' }
+```
+
+For dark backgrounds:
+```javascript
+// Bright yellow vs Cyan
+{ highlightColorA: '#FFEB3B', highlightColorB: '#00E5FF' }
+
+// Lime vs Magenta
+{ highlightColorA: '#CDDC39', highlightColorB: '#E040FB' }
+```
+
 ### With Crop Regions (Compare Specific Areas)
 
 ```javascript
@@ -251,12 +288,12 @@ const viewer = new PDFDiffViewer('#container', {
 ### With Smart Alignment (Content Reflow Handling)
 
 ```javascript
+// Smart alignment is now automatic! No configuration needed
 // Handles cases where content shifts across pages
 // (e.g., adding text pushes content to next page)
 const viewer = new PDFDiffViewer('#container', {
-  smartAlignment: true,         // Enable intelligent page matching
-  alignmentTolerance: 2,        // Search +/- 2 pages for matches
-  similarityThreshold: 0.3      // Require 30% content similarity
+  alignmentTolerance: 2,        // Search +/- 2 pages for matches (default)
+  similarityThreshold: 0.3      // Require 30% content similarity (default)
 });
 
 const results = await viewer.compare(pdfA, pdfB);
@@ -266,10 +303,10 @@ console.log('Page mappings:', results.pageMapping);
 ```
 
 **How it works:**
+- Automatically detects and handles different page counts
 - Extracts text from all pages in both documents
 - Uses Jaccard similarity to find best-matching pages
-- Handles different page counts gracefully
-- Shows similarity scores in the UI
+- Shows similarity scores in the results
 
 ### With Mask Regions (Ignore Dynamic Content)
 
