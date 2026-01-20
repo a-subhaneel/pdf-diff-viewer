@@ -20,19 +20,21 @@ class PDFDiffViewer {
             scale: options.scale || 3.0,
             maxShift: options.maxShift || 3,
             dilationRadius: options.dilationRadius || 0,
-            colorTolerance: options.colorTolerance || 200,
+            colorTolerance: options.colorTolerance || 120,
             minHighlightArea: options.minHighlightArea || 60,
             minWordSize: options.minWordSize || 8,
             highlightAlpha: options.highlightAlpha || 0.32,
+            highlightColorA: options.highlightColorA || '#FF1744',  // Red for Doc A changes
+            highlightColorB: options.highlightColorB || '#2196F3',  // Blue for Doc B changes
+            backgroundFillColor: options.backgroundFillColor || 'white',  // Canvas background
             labelA: options.labelA || 'Document A',
             labelB: options.labelB || 'Document B',
             workerSrc: options.workerSrc || 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
             showPageNumbers: options.showPageNumbers !== false,
             cropRegions: options.cropRegions || [],
             maskRegions: options.maskRegions || [],
-            smartAlignment: options.smartAlignment !== false, // Enable text-based alignment
-            alignmentTolerance: options.alignmentTolerance || 2, // Search +/- 2 pages for matches
-            similarityThreshold: options.similarityThreshold || 0.3 // Minimum similarity score (0-1)
+            alignmentTolerance: options.alignmentTolerance || 2,
+            similarityThreshold: options.similarityThreshold || 0.3
         };
 
         // Check if PDF.js is loaded
@@ -72,13 +74,9 @@ class PDFDiffViewer {
         summaryDiv.className = 'pdf-diff-summary';
         this.container.appendChild(summaryDiv);
 
-        // Use smart alignment if enabled and page counts differ
-        if (this.options.smartAlignment && docA.numPages !== docB.numPages) {
-            summaryDiv.innerHTML = '<p>Analyzing document structure for smart alignment...</p>';
+        // Automatically handle different page counts with smart alignment
+        if (docA.numPages !== docB.numPages) {
             pageMapping = await this._findPageMappings(docA, docB);
-            summaryDiv.innerHTML = `<h3>Smart Alignment Active: Comparing ${pageMapping.length} matched page(s)</h3>`;
-        } else if (docA.numPages !== docB.numPages) {
-            throw new Error(`Page count mismatch: ${docA.numPages} vs ${docB.numPages}. Enable 'smartAlignment' option to handle different page counts.`);
         } else {
             // Direct 1-to-1 mapping
             for (let i = 1; i <= docA.numPages; i++) {
@@ -105,11 +103,7 @@ class PDFDiffViewer {
 
         // Update summary
         if (this.options.showPageNumbers) {
-            if (docA.numPages === docB.numPages) {
-                summaryDiv.innerHTML = `<h3>Comparison Results: ${docA.numPages} page(s)</h3>`;
-            } else {
-                summaryDiv.innerHTML += `<p>Doc A: ${docA.numPages} pages | Doc B: ${docB.numPages} pages</p>`;
-            }
+            summaryDiv.innerHTML = `<h3>Comparison Results: ${pageMapping.length} page(s)</h3>`;
         }
 
         return this.results;
@@ -358,7 +352,7 @@ class PDFDiffViewer {
         padded.height = targetHeight;
 
         const ctx = padded.getContext('2d');
-        ctx.fillStyle = 'white';
+        ctx.fillStyle = this.options.backgroundFillColor;
         ctx.fillRect(0, 0, targetWidth, targetHeight);
         ctx.drawImage(srcCanvas, 0, 0);
         return padded;
@@ -369,7 +363,7 @@ class PDFDiffViewer {
         temp.width = width;
         temp.height = height;
         const ctx = temp.getContext('2d');
-        ctx.fillStyle = 'white';
+        ctx.fillStyle = this.options.backgroundFillColor;
         ctx.fillRect(0, 0, width, height);
         ctx.drawImage(srcCanvas, dx, dy);
         return ctx.getImageData(0, 0, width, height);
@@ -529,11 +523,14 @@ class PDFDiffViewer {
     _drawHighlightBoxes(ctx, boxes, color = 'red') {
         ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
         const alpha = this.options.highlightAlpha;
+        
+        // Use configured colors or fallback to color parameter
         if (color === 'red') {
-            ctx.fillStyle = `rgba(255, 0, 0, ${alpha})`;
+            ctx.fillStyle = this._hexToRgba(this.options.highlightColorA, alpha);
         } else if (color === 'green') {
-            ctx.fillStyle = `rgba(0, 200, 0, ${alpha})`;
+            ctx.fillStyle = this._hexToRgba(this.options.highlightColorB, alpha);
         }
+        
         boxes.forEach(({ x, y, width, height }) => {
             ctx.fillRect(x, y, width, height);
         });
@@ -783,6 +780,26 @@ class PDFDiffViewer {
             .replace(/[^\w\s]/g, ' ') // Remove punctuation
             .split(/\s+/)
             .filter(word => word.length > 2 && !stopwords.has(word));
+    }
+
+    /**
+     * Convert hex color to rgba with alpha
+     */
+    _hexToRgba(hex, alpha) {
+        // Handle both #RGB and #RRGGBB formats
+        const shorthandRegex = /^#?([a-f\d])([a-f\d])([a-f\d])$/i;
+        hex = hex.replace(shorthandRegex, (m, r, g, b) => r + r + g + g + b + b);
+
+        const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+        if (result) {
+            const r = parseInt(result[1], 16);
+            const g = parseInt(result[2], 16);
+            const b = parseInt(result[3], 16);
+            return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+        }
+        
+        // Fallback to red if invalid hex
+        return `rgba(255, 0, 0, ${alpha})`;
     }
 }
 

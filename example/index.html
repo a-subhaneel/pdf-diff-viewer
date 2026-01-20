@@ -70,12 +70,6 @@
       <label><strong>PDF B:</strong></label><br>
       <input type="file" id="fileB" accept="application/pdf">
     </div>
-    <div class="file-input">
-      <label>
-        <input type="checkbox" id="smartAlignment" checked>
-        <strong>Enable Smart Alignment</strong> (handles different page counts and content reflow)
-      </label>
-    </div>
     <button id="compareBtn" onclick="comparePDFs()">Compare PDFs</button>
     <button onclick="clearResults()">Clear Results</button>
   </div>
@@ -96,17 +90,13 @@
 
       // Initialize viewer if not exists
       if (!viewer) {
-        const smartAlignment = document.getElementById('smartAlignment').checked;
-        
         viewer = new PDFDiffViewer('#results', {
           scale: 3.0,
+          colorTolerance: 120,
           labelA: 'Original Document',
           labelB: 'Modified Document',
           highlightAlpha: 0.32,
-          showPageNumbers: true,
-          smartAlignment: smartAlignment,        // Enable smart page alignment
-          alignmentTolerance: 2,                  // Search +/- 2 pages for matches
-          similarityThreshold: 0.3                // Minimum 30% content similarity
+          showPageNumbers: true
         });
       }
 
