@@ -20,7 +20,7 @@ class PDFDiffViewer {
             scale: options.scale || 3.0,
             maxShift: options.maxShift || 3,
             dilationRadius: options.dilationRadius || 0,
-            colorTolerance: options.colorTolerance || 120,
+            colorTolerance: options.colorTolerance || 200,
             minHighlightArea: options.minHighlightArea || 60,
             minWordSize: options.minWordSize || 8,
             highlightAlpha: options.highlightAlpha || 0.32,
@@ -29,7 +29,10 @@ class PDFDiffViewer {
             workerSrc: options.workerSrc || 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
             showPageNumbers: options.showPageNumbers !== false,
             cropRegions: options.cropRegions || [],
-            maskRegions: options.maskRegions || []
+            maskRegions: options.maskRegions || [],
+            smartAlignment: options.smartAlignment !== false, // Enable text-based alignment
+            alignmentTolerance: options.alignmentTolerance || 2, // Search +/- 2 pages for matches
+            similarityThreshold: options.similarityThreshold || 0.3 // Minimum similarity score (0-1)
         };
 
         // Check if PDF.js is loaded
@@ -57,39 +60,56 @@ class PDFDiffViewer {
         const docA = await pdfjsLib.getDocument({ data: bufferA }).promise;
         const docB = await pdfjsLib.getDocument({ data: bufferB }).promise;
 
-        if (docA.numPages !== docB.numPages) {
-            throw new Error(`Page count mismatch: ${docA.numPages} vs ${docB.numPages}`);
-        }
-
         // Clear previous results
         this.container.innerHTML = '';
 
         let totalDiffPixels = 0;
         const pageResults = [];
+        let pageMapping = [];
 
         // Create summary element
         const summaryDiv = document.createElement('div');
         summaryDiv.className = 'pdf-diff-summary';
         this.container.appendChild(summaryDiv);
 
-        // Process each page
-        for (let i = 1; i <= docA.numPages; i++) {
-            const pageResult = await this._comparePage(docA, docB, i);
+        // Use smart alignment if enabled and page counts differ
+        if (this.options.smartAlignment && docA.numPages !== docB.numPages) {
+            summaryDiv.innerHTML = '<p>Analyzing document structure for smart alignment...</p>';
+            pageMapping = await this._findPageMappings(docA, docB);
+            summaryDiv.innerHTML = `<h3>Smart Alignment Active: Comparing ${pageMapping.length} matched page(s)</h3>`;
+        } else if (docA.numPages !== docB.numPages) {
+            throw new Error(`Page count mismatch: ${docA.numPages} vs ${docB.numPages}. Enable 'smartAlignment' option to handle different page counts.`);
+        } else {
+            // Direct 1-to-1 mapping
+            for (let i = 1; i <= docA.numPages; i++) {
+                pageMapping.push({ pageA: i, pageB: i, similarity: 1.0 });
+            }
+        }
+
+        // Process each mapped page pair
+        for (const mapping of pageMapping) {
+            const pageResult = await this._comparePagePair(docA, docB, mapping.pageA, mapping.pageB);
+            pageResult.similarity = mapping.similarity;
             pageResults.push(pageResult);
             totalDiffPixels += pageResult.diffPixels;
 
-            this._renderPageComparison(pageResult, i);
+            this._renderPageComparison(pageResult, mapping.pageA, mapping.pageB);
         }
 
         this.results = {
-            totalPages: docA.numPages,
+            totalPages: pageMapping.length,
             totalDiffPixels,
-            pageResults
+            pageResults,
+            pageMapping
         };
 
         // Update summary
         if (this.options.showPageNumbers) {
-            summaryDiv.innerHTML = `<h3>Comparison Results: ${docA.numPages} page(s)</h3>`;
+            if (docA.numPages === docB.numPages) {
+                summaryDiv.innerHTML = `<h3>Comparison Results: ${docA.numPages} page(s)</h3>`;
+            } else {
+                summaryDiv.innerHTML += `<p>Doc A: ${docA.numPages} pages | Doc B: ${docB.numPages} pages</p>`;
+            }
         }
 
         return this.results;
@@ -134,13 +154,17 @@ class PDFDiffViewer {
     }
 
     async _comparePage(docA, docB, pageNum) {
+        return await this._comparePagePair(docA, docB, pageNum, pageNum);
+    }
+
+    async _comparePagePair(docA, docB, pageNumA, pageNumB) {
         const canvasA = document.createElement('canvas');
         const canvasB = document.createElement('canvas');
 
-        const { words: wordsA } = await this._renderPageToCanvas(docA, pageNum, canvasA);
-        const { words: wordsB } = await this._renderPageToCanvas(docB, pageNum, canvasB);
+        const { words: wordsA } = await this._renderPageToCanvas(docA, pageNumA, canvasA);
+        const { words: wordsB } = await this._renderPageToCanvas(docB, pageNumB, canvasB);
 
-        const pageCrop = this.options.cropRegions.find(r => r.page === pageNum);
+        const pageCrop = this.options.cropRegions.find(r => r.page === pageNumA);
         const croppedWordsA = this._offsetWordBoxes(wordsA, pageCrop);
         const croppedWordsB = this._offsetWordBoxes(wordsB, pageCrop);
 
@@ -173,7 +197,7 @@ class PDFDiffViewer {
         const diffPixels = this._buildDiffImage(imgA, shiftedB, diffImage, this.options.colorTolerance);
 
         // Apply masks
-        const pageMasks = this.options.maskRegions.filter(r => r.page === pageNum);
+        const pageMasks = this.options.maskRegions.filter(r => r.page === pageNumA);
         this._applyMasks(diffImage, pageMasks);
 
         // Dilate diff mask
@@ -194,7 +218,8 @@ class PDFDiffViewer {
         const overlayOnB = this._overlayDiff(paddedB, highlightCanvasB);
 
         return {
-            pageNum,
+            pageNumA,
+            pageNumB,
             diffPixels,
             overlayA: overlayOnA.toDataURL('image/png'),
             overlayB: overlayOnB.toDataURL('image/png'),
@@ -202,13 +227,21 @@ class PDFDiffViewer {
         };
     }
 
-    _renderPageComparison(pageResult, pageNum) {
+    _renderPageComparison(pageResult, pageNumA, pageNumB = null) {
         const pageDiv = document.createElement('div');
         pageDiv.className = 'pdf-diff-page';
 
         if (this.options.showPageNumbers) {
             const title = document.createElement('h4');
-            title.innerText = `Page ${pageNum}`;
+            if (pageNumB !== null && pageNumA !== pageNumB) {
+                title.innerText = `Page ${pageNumA} ↔ Page ${pageNumB}`;
+                if (pageResult.similarity !== undefined) {
+                    const simPercent = (pageResult.similarity * 100).toFixed(1);
+                    title.innerText += ` (${simPercent}% content match)`;
+                }
+            } else {
+                title.innerText = `Page ${pageNumA}`;
+            }
             title.style.marginTop = '20px';
             pageDiv.appendChild(title);
         }
@@ -626,6 +659,130 @@ class PDFDiffViewer {
         ctx.imageSmoothingEnabled = false;
 
         return overlay;
+    }
+
+    // ===== SMART ALIGNMENT METHODS =====
+
+    /**
+     * Find optimal page mappings between two PDFs based on text content similarity
+     */
+    async _findPageMappings(docA, docB) {
+        const mappings = [];
+        const usedPagesB = new Set();
+        const tolerance = this.options.alignmentTolerance;
+
+        // Extract text from all pages of both documents
+        const textsA = await this._extractAllPageTexts(docA);
+        const textsB = await this._extractAllPageTexts(docB);
+
+        // For each page in document A, find best matching page in document B
+        for (let pageA = 1; pageA <= docA.numPages; pageA++) {
+            const textA = textsA[pageA - 1];
+            
+            let bestMatch = null;
+            let bestSimilarity = 0;
+
+            // Search within tolerance range
+            const startPage = Math.max(1, pageA - tolerance);
+            const endPage = Math.min(docB.numPages, pageA + tolerance);
+
+            for (let pageB = startPage; pageB <= endPage; pageB++) {
+                if (usedPagesB.has(pageB)) continue;
+
+                const textB = textsB[pageB - 1];
+                const similarity = this._calculateTextSimilarity(textA, textB);
+
+                if (similarity > bestSimilarity && similarity >= this.options.similarityThreshold) {
+                    bestSimilarity = similarity;
+                    bestMatch = pageB;
+                }
+            }
+
+            // If no good match found, try 1:1 mapping if that page exists and isn't used
+            if (!bestMatch && pageA <= docB.numPages && !usedPagesB.has(pageA)) {
+                bestMatch = pageA;
+                bestSimilarity = this._calculateTextSimilarity(textA, textsB[pageA - 1]);
+            }
+
+            if (bestMatch) {
+                usedPagesB.add(bestMatch);
+                mappings.push({
+                    pageA,
+                    pageB: bestMatch,
+                    similarity: bestSimilarity
+                });
+            }
+        }
+
+        return mappings;
+    }
+
+    /**
+     * Extract text from all pages of a PDF document
+     */
+    async _extractAllPageTexts(doc) {
+        const texts = [];
+        for (let i = 1; i <= doc.numPages; i++) {
+            const page = await doc.getPage(i);
+            const textContent = await page.getTextContent();
+            const pageText = textContent.items
+                .map(item => item.str || '')
+                .join(' ')
+                .toLowerCase()
+                .replace(/\s+/g, ' ')
+                .trim();
+            texts.push(pageText);
+        }
+        return texts;
+    }
+
+    /**
+     * Calculate text similarity using Jaccard similarity coefficient
+     * Returns a value between 0 (no similarity) and 1 (identical)
+     */
+    _calculateTextSimilarity(text1, text2) {
+        if (!text1 && !text2) return 1.0;
+        if (!text1 || !text2) return 0.0;
+
+        // Tokenize into words
+        const words1 = this._tokenize(text1);
+        const words2 = this._tokenize(text2);
+
+        // Create sets of words
+        const set1 = new Set(words1);
+        const set2 = new Set(words2);
+
+        // Calculate Jaccard similarity: |intersection| / |union|
+        const intersection = new Set([...set1].filter(x => set2.has(x)));
+        const union = new Set([...set1, ...set2]);
+
+        if (union.size === 0) return 0.0;
+
+        const jaccardSimilarity = intersection.size / union.size;
+
+        // Also consider length ratio for better accuracy
+        const lengthRatio = Math.min(text1.length, text2.length) / Math.max(text1.length, text2.length);
+
+        // Weighted combination
+        return jaccardSimilarity * 0.7 + lengthRatio * 0.3;
+    }
+
+    /**
+     * Tokenize text into words, removing common stopwords
+     */
+    _tokenize(text) {
+        const stopwords = new Set([
+            'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+            'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were', 'be',
+            'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will',
+            'would', 'should', 'could', 'may', 'might', 'can', 'shall'
+        ]);
+
+        return text
+            .toLowerCase()
+            .replace(/[^\w\s]/g, ' ') // Remove punctuation
+            .split(/\s+/)
+            .filter(word => word.length > 2 && !stopwords.has(word));
     }
 }
 
