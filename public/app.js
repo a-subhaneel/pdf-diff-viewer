@@ -431,7 +431,64 @@ angular.module("pdfDiffApp", [])
             return overlay;
         }
 
+        // Store PDFs for cleanup
+        let currentPdfA = null;
+        let currentPdfB = null;
+
+        // Cleanup function to clear all resources
+        function cleanup() {
+            // Clear canvases
+            const canvasA = document.getElementById("canvasA");
+            const canvasB = document.getElementById("canvasB");
+            const canvasDiff = document.getElementById("canvasDiff");
+            
+            if (canvasA) {
+                const ctxA = canvasA.getContext("2d");
+                ctxA.clearRect(0, 0, canvasA.width, canvasA.height);
+                canvasA.width = 0;
+                canvasA.height = 0;
+            }
+            
+            if (canvasB) {
+                const ctxB = canvasB.getContext("2d");
+                ctxB.clearRect(0, 0, canvasB.width, canvasB.height);
+                canvasB.width = 0;
+                canvasB.height = 0;
+            }
+            
+            if (canvasDiff) {
+                const ctxDiff = canvasDiff.getContext("2d");
+                ctxDiff.clearRect(0, 0, canvasDiff.width, canvasDiff.height);
+                canvasDiff.width = 0;
+                canvasDiff.height = 0;
+            }
+            
+            // Clear results div
+            const resultsDiv = document.getElementById("results");
+            if (resultsDiv) {
+                resultsDiv.innerHTML = "";
+            }
+            
+            // Destroy PDF documents to free memory
+            if (currentPdfA) {
+                currentPdfA.destroy();
+                currentPdfA = null;
+            }
+            if (currentPdfB) {
+                currentPdfB.destroy();
+                currentPdfB = null;
+            }
+            
+            // Force garbage collection hint
+            if (window.gc) {
+                window.gc();
+            }
+        }
+
         $scope.compare = async function () {
+            // Clear previous results and free memory
+            cleanup();
+            
             const LABEL_A = "Document A";
             const LABEL_B = "Document B";
             const fileA = document.getElementById("fileA").files[0];
@@ -457,12 +514,17 @@ angular.module("pdfDiffApp", [])
             const arrayBufferA = await fileA.arrayBuffer();
             const arrayBufferB = await fileB.arrayBuffer();
 
-            const pdfA = await pdfjsLib.getDocument({ data: arrayBufferA }).promise;
-            const pdfB = await pdfjsLib.getDocument({ data: arrayBufferB }).promise;
+            currentPdfA = await pdfjsLib.getDocument({ data: arrayBufferA }).promise;
+            currentPdfB = await pdfjsLib.getDocument({ data: arrayBufferB }).promise;
+            const pdfA = currentPdfA;
+            const pdfB = currentPdfB;
 
+            const maxPages = Math.max(pdfA.numPages, pdfB.numPages);
+            
             if (pdfA.numPages !== pdfB.numPages) {
-                alert(`Page mismatch: ${pdfA.numPages} vs ${pdfB.numPages}`);
-                return;
+                const message = `Page count differs: ${LABEL_A} has ${pdfA.numPages} page(s), ${LABEL_B} has ${pdfB.numPages} page(s). Showing all ${maxPages} page(s).`;
+                console.warn(message);
+                // alert(message);
             }
 
             const canvasA = document.getElementById("canvasA");
@@ -470,14 +532,86 @@ angular.module("pdfDiffApp", [])
             const canvasDiff = document.getElementById("canvasDiff");
 
             const resultsDiv = document.getElementById("results");
-            resultsDiv.innerHTML = "";
-            // resultsDiv.innerHTML = "<h3>Diff on A vs Diff on B</h3>";
+            // resultsDiv already cleared in cleanup()
 
             // const zip = new JSZip();
             let totalDiffPixels = 0;
 
-            for (let i = 1; i <= pdfA.numPages; i++) {
+            for (let i = 1; i <= maxPages; i++) {
 
+                const hasPageA = i <= pdfA.numPages;
+                const hasPageB = i <= pdfB.numPages;
+
+                // Handle pages that only exist in one document
+                if (!hasPageA || !hasPageB) {
+                    const title = document.createElement("h4");
+                    title.innerText = `Page ${i}`;
+
+                    const row = document.createElement("div");
+                    row.style.display = "grid";
+                    row.style.gridTemplateColumns = "1fr 1fr";
+                    row.style.gap = "15px";
+                    row.style.marginBottom = "25px";
+                    row.style.borderTop = "2px solid #ddd";
+                    row.style.paddingTop = "15px";
+
+                    function makeEmptyCol(labelText) {
+                        const col = document.createElement("div");
+                        const label = document.createElement("div");
+                        label.innerHTML = `<b>${labelText}</b>`;
+
+                        const placeholder = document.createElement("div");
+                        placeholder.style.padding = "40px";
+                        placeholder.style.textAlign = "center";
+                        placeholder.style.backgroundColor = "#f5f5f5";
+                        placeholder.style.border = "1px solid #ccc";
+                        placeholder.style.color = "#999";
+                        placeholder.innerText = "No corresponding page";
+
+                        col.appendChild(label);
+                        col.appendChild(placeholder);
+                        return col;
+                    }
+
+                    function makePageCol(labelText, canvas) {
+                        const col = document.createElement("div");
+                        const label = document.createElement("div");
+                        label.innerHTML = `<b>${labelText}</b>`;
+
+                        const img = document.createElement("img");
+                        img.src = canvas.toDataURL("image/png");
+                        img.style.width = "100%";
+                        img.style.border = "1px solid #ccc";
+                        img.style.imageRendering = "crisp-edges";
+                        img.style.backgroundColor = "#fff";
+
+                        col.appendChild(label);
+                        col.appendChild(img);
+                        return col;
+                    }
+
+                    if (hasPageA && !hasPageB) {
+                        // Only in Document A
+                        await renderPageToCanvas(pdfA, i, canvasA);
+                        const colA = makePageCol(`${LABEL_A} (only)`, canvasA);
+                        const colB = makeEmptyCol(`${LABEL_B} (no page ${i})`);
+                        row.appendChild(colA);
+                        row.appendChild(colB);
+                    } else if (!hasPageA && hasPageB) {
+                        // Only in Document B
+                        await renderPageToCanvas(pdfB, i, canvasB);
+                        const colA = makeEmptyCol(`${LABEL_A} (no page ${i})`);
+                        const colB = makePageCol(`${LABEL_B} (only)`, canvasB);
+                        row.appendChild(colA);
+                        row.appendChild(colB);
+                    }
+
+                    resultsDiv.appendChild(title);
+                    resultsDiv.appendChild(row);
+                    continue;
+                }
+
+                // Both pages exist - do normal comparison
                 const { words: wordsA } = await renderPageToCanvas(pdfA, i, canvasA);
                 const { words: wordsB } = await renderPageToCanvas(pdfB, i, canvasB);
 
@@ -566,6 +700,24 @@ angular.module("pdfDiffApp", [])
 
                     col.appendChild(label);
                     col.appendChild(img);
+                    return col;
+                }
+
+                function makeEmptyCol(labelText) {
+                    const col = document.createElement("div");
+                    const label = document.createElement("div");
+                    label.innerHTML = `<b>${labelText}</b>`;
+
+                    const placeholder = document.createElement("div");
+                    placeholder.style.padding = "40px";
+                    placeholder.style.textAlign = "center";
+                    placeholder.style.backgroundColor = "#f5f5f5";
+                    placeholder.style.border = "1px solid #ccc";
+                    placeholder.style.color = "#999";
+                    placeholder.innerText = "No corresponding page";
+
+                    col.appendChild(label);
+                    col.appendChild(placeholder);
                     return col;
                 }
 
