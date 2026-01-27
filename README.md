@@ -5,6 +5,17 @@ A browser-based PDF comparison library with intelligent visual diff highlighting
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Node Version](https://img.shields.io/badge/node-%3E%3D16.0.0-brightgreen.svg)
 
+## 🌐 Live Demo
+
+[Check out the live demo here!](https://a-subhaneel.github.io/pdf-diff-viewer/example/)
+
+You can instantly try the PDF Diff Viewer in your browser.
+
+## 📸 Screenshots
+
+![Screenshot 1](screenshots/screenshot1.png)
+![Screenshot 2](screenshots/screenshot2.png)
+
 ## ✨ Features
 
 - **🌐 Browser-Based** - Runs entirely in the browser using PDF.js
